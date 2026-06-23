@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__
+
+# generated artifacts
+experiments/results/
+experiments/kstep_data/
+smoketest/problems.jsonl
+smoketest/transcripts.jsonl
+*.pyc
+

@@ -1,0 +1,18 @@
+# Python dependencies for looped-transformer-study
+# Install everything:   pip install -r requirements.txt
+# (Python 3.10+)
+
+# --- Core: data pipeline -------------------------------------------------
+# gen_math_problems.py, gen_math_transcripts.py (answer verification)
+sympy>=1.12
+
+# --- Scaling lab + minimal model ----------------------------------------
+# experiments/loop_scaling_lab.py, summary/looped_transformer_minimal.py
+torch>=2.0
+
+# --- Optional ------------------------------------------------------------
+# Plots in loop_scaling_lab.py (CSV is still written if absent)
+matplotlib>=3.7
+# OpenRouter teacher in the data pipeline
+#   (gen_math_transcripts.py --teacher openrouter / gen_math_problems.py --source teacher)
+requests>=2.31
