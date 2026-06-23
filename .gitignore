@@ -4,6 +4,7 @@ __pycache__
 # generated artifacts
 experiments/results/
 experiments/kstep_data/
+phase_a/data/
 smoketest/problems.jsonl
 smoketest/transcripts.jsonl
 *.pyc
