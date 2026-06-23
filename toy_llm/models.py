@@ -36,16 +36,18 @@ class RMSNorm(nn.Module):
 
 
 class CausalBlock(nn.Module):
-    def __init__(self, dim, heads):
+    def __init__(self, dim, heads, dropout=0.0):
         super().__init__()
-        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
-        self.ffn = nn.Sequential(nn.Linear(dim, 4 * dim), nn.GELU(), nn.Linear(4 * dim, dim))
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True, dropout=dropout)
+        self.ffn = nn.Sequential(nn.Linear(dim, 4 * dim), nn.GELU(),
+                                 nn.Dropout(dropout), nn.Linear(4 * dim, dim))
         self.n1, self.n2 = RMSNorm(dim), RMSNorm(dim)
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, x, mask):
         a = self.n1(x)
-        x = x + self.attn(a, a, a, attn_mask=mask, need_weights=False)[0]
-        x = x + self.ffn(self.n2(x))
+        x = x + self.drop(self.attn(a, a, a, attn_mask=mask, need_weights=False)[0])
+        x = x + self.drop(self.ffn(self.n2(x)))
         return x
 
 
@@ -86,30 +88,33 @@ def _causal_mask(T, device, cache={}):
 
 
 class VanillaLM(nn.Module):
-    def __init__(self, vocab, dim=256, heads=4, n_layers=8, max_len=256):
+    def __init__(self, vocab, dim=256, heads=4, n_layers=8, max_len=256, dropout=0.0):
         super().__init__()
         self.tok = nn.Embedding(vocab, dim)
         self.pos = nn.Embedding(max_len, dim)
-        self.blocks = nn.ModuleList([CausalBlock(dim, heads) for _ in range(n_layers)])
+        self.drop = nn.Dropout(dropout)
+        self.blocks = nn.ModuleList([CausalBlock(dim, heads, dropout) for _ in range(n_layers)])
         self.norm = RMSNorm(dim)
         self.head = nn.Linear(dim, vocab)
 
     def forward(self, ids):
         B, T = ids.shape
         m = _causal_mask(T, ids.device)
-        x = self.tok(ids) + self.pos(torch.arange(T, device=ids.device))[None]
+        x = self.drop(self.tok(ids) + self.pos(torch.arange(T, device=ids.device))[None])
         for blk in self.blocks:
             x = blk(x, m)
         return self.head(self.norm(x))
 
 
 class LoopedLM(nn.Module):
-    def __init__(self, vocab, dim=256, heads=4, n_unique=2, n_loops=4, max_len=256, inject=True):
+    def __init__(self, vocab, dim=256, heads=4, n_unique=2, n_loops=4, max_len=256,
+                 inject=True, dropout=0.0):
         super().__init__()
         self.n_loops, self.inject = n_loops, inject
         self.tok = nn.Embedding(vocab, dim)
         self.pos = nn.Embedding(max_len, dim)
-        self.blocks = nn.ModuleList([CausalBlock(dim, heads) for _ in range(n_unique)])
+        self.drop = nn.Dropout(dropout)
+        self.blocks = nn.ModuleList([CausalBlock(dim, heads, dropout) for _ in range(n_unique)])
         self.inj = Injection(dim) if inject else None
         self.norm = RMSNorm(dim)
         self.head = nn.Linear(dim, vocab)
@@ -119,7 +124,7 @@ class LoopedLM(nn.Module):
         n_loops = n_loops or self.n_loops
         B, T = ids.shape
         m = _causal_mask(T, ids.device)
-        e = self.tok(ids) + self.pos(torch.arange(T, device=ids.device))[None]
+        e = self.drop(self.tok(ids) + self.pos(torch.arange(T, device=ids.device))[None])
         h = e
         for t in range(n_loops):
             if self.inject:
@@ -139,12 +144,12 @@ def n_params(m):
     return sum(p.numel() for p in m.parameters())
 
 
-def build(kind, vocab, dim, heads, max_len, layers=8, k=2, loops=4):
+def build(kind, vocab, dim, heads, max_len, layers=8, k=2, loops=4, dropout=0.0):
     """kind: vanilla | parcae | bare. Returns (model, label)."""
     if kind == "vanilla":
-        return VanillaLM(vocab, dim, heads, n_layers=layers, max_len=max_len), f"vanilla-{layers}L"
+        return VanillaLM(vocab, dim, heads, layers, max_len, dropout), f"vanilla-{layers}L"
     if kind == "parcae":
-        return LoopedLM(vocab, dim, heads, k, loops, max_len, inject=True), f"parcae-{k}x{loops}"
+        return LoopedLM(vocab, dim, heads, k, loops, max_len, True, dropout), f"parcae-{k}x{loops}"
     if kind == "bare":
-        return LoopedLM(vocab, dim, heads, k, loops, max_len, inject=False), f"bare-{k}x{loops}"
+        return LoopedLM(vocab, dim, heads, k, loops, max_len, False, dropout), f"bare-{k}x{loops}"
     raise ValueError(kind)

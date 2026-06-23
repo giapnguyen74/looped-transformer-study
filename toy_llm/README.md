@@ -17,8 +17,10 @@ looped L times (params ≈ k layers, effective depth ≈ kL) **match a kL-deep v
 pip install -r ../requirements.txt        # torch (+ stdlib)
 ```
 
-Tiny Shakespeare (~1 MB) auto-downloads to `toy_llm/input.txt` on first run, or pass
-`--data <textfile>`. Auto-selects CUDA / MPS / CPU.
+Data auto-downloads on first run (or pass `--data <file>`). Auto-selects CUDA / MPS / CPU.
+- `--dataset shakespeare` (default, ~1 MB): fast, but small — big models **overfit** it.
+- `--dataset enwik8` (~100 MB, byte-level): large enough that the deep baseline is *data-bound*,
+  not memorizing — use this for trustworthy conclusions (heavier: longer download + training).
 
 ## End-to-end experiment
 
@@ -30,6 +32,17 @@ python train.py sweep
 
 # 2) train the matched set with those SAME hyperparams for every model; prints the table
 python train.py compare
+```
+
+**Quick look (Shakespeare):** the commands above. Fast, but expect the deep baseline to overfit,
+so the iso-depth comparison won't be clean.
+
+**Rigorous run (recommended before concluding):** use enwik8 so nothing overfits, add a little
+dropout, and train longer. Sweep on the same dataset, then compare:
+
+```bash
+python train.py sweep   --dataset enwik8 --steps 20000 --sweep-steps 3000 --dropout 0.1
+python train.py compare --dataset enwik8 --steps 20000 --dropout 0.1
 ```
 
 `sweep` tries an lr grid (`--sweep-lr`, default `1e-3,5e-4,3e-4,1e-4`) on `vanilla-deep` at a
@@ -59,7 +72,15 @@ All share `dim`, `heads`, vocab, context, steps, and the swept hparams. With def
 
 ## Reading the result
 
-`compare` prints params / val_loss / perplexity / time per model. The claim looks like:
+`compare` prints, per model: params, **best_val** (lowest validation loss seen), ppl, the step it
+peaked (`best@`), `final` val, and time. Two reading rules:
+
+- **Compare `best_val`, not final** — models overfit at different rates, so final-step val is an
+  unfair yardstick; best-val (early-stopping-style) is the fair one.
+- **`final ≫ best` flags overfitting** — if you see this (especially on the deep baseline with
+  Shakespeare), that model isn't a valid quality ceiling; switch to `--dataset enwik8`.
+
+The claim looks like:
 
 - **`parcae-2x4` ≈ `vanilla-8L`** in perplexity, but at roughly **`vanilla-2L`'s parameter
   count** → looping reaches deep-model quality cheaply (depth without parameters).
@@ -76,8 +97,12 @@ depth here — itself a clean result, pointing at scale/recipe.
 ```bash
 python train.py compare --dim 384 --k 2 --loops 6 --steps 6000      # bigger / deeper loop
 python train.py sweep   --sweep-lr 2e-3,1e-3,5e-4 --sweep-steps 2000
+python train.py compare --dataset enwik8 --dropout 0.1 --steps 20000 # rigorous, no overfit
 python train.py compare --device cpu                                 # force device
 ```
+
+`--dataset` (shakespeare/enwik8), `--dropout` (regularization), and `--val-every` (best-val
+cadence) are the knobs added for trustworthy conclusions.
 
 `--k`/`--loops` set the looped block size and loop count (effective depth = k·loops, which also
 sets the deep baseline's layer count); `--dim`, `--heads`, `--block` (context), `--bsz`,
@@ -98,4 +123,8 @@ sets the deep baseline's layer count); `--dim`, `--heads`, `--block` (context), 
   added by evaluating `LoopedLM` at varied `n_loops`.
 - **Fairness scope:** we sweep the vanilla baseline and transfer to all. A stricter version would
   also sweep the bare RDM separately (Parcae tuned RDM baselines too) — easy to add if needed.
-- Same seed across models; differences are architecture, not initialization luck.
+- **Overfit confound (fixed):** on Shakespeare the 8-layer baseline overfits (train≪val), so it's
+  not a valid quality ceiling — that's why `--dataset enwik8` + `--dropout` exist; use them before
+  drawing the iso-depth conclusion.
+- **Single seed:** still one seed per model — gaps of ~0.02–0.05 nats are within seed noise, so
+  for a final claim run 2–3 seeds (not yet automated) and report mean±std.

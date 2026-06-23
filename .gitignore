@@ -7,6 +7,8 @@ experiments/kstep_data/
 phase_a/data/
 phase_b/results/
 toy_llm/input.txt
+toy_llm/enwik8
+toy_llm/enwik8.zip
 smoketest/problems.jsonl
 smoketest/transcripts.jsonl
 *.pyc
