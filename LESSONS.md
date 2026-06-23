@@ -150,3 +150,35 @@ The bigger lessons from working through what the experiments mean:
 **One-line takeaway:** the architecture is a cheaper, depth-capable *substrate*; the reasoning is
 *post-training*. Same as base-GPT → o1/R1 — structure changes the cost and adds a test-time knob,
 it doesn't change the fact that behavior is trained.
+
+---
+
+## Phase B — first multi-hop KG results (looped reasoner)
+
+Setup: small world (~3k facts, memorizable), looped reasoner with Parcae injection + deep
+(per-iteration) supervision, dynamic depth R_max=10, 20k steps. Fair eval uses matched **T=k**.
+
+| Capability | Result | Read |
+|---|---|---|
+| Fact memorization | ✅ k=1 = 1.00 (incl. sys facts never queried) | world must be sized to model capacity (an early 80k-fact world failed outright) |
+| In-distribution composition | ⚠️ works but decays fast: k=2 .90, k=3 .58, k=4 .27, k=5 .13 | the loop chains *practiced* transitions; later hops less reliable |
+| Systematic generalization | ❌ k≥2 ≈ 0 | composes familiar facts, not novel ones |
+| Depth extrapolation | ❌ k=6–10 ≈ 0 at matched T=k | the **"training depth is the ceiling"** negative — falsifies H1 *for this config* |
+
+**Why systematic/extrapolation fail (the mechanism).** Hop 1 (`head + r₁`) uses an *input-token*
+key → it's the memorized 1-hop lookup, works everywhere. Hop ≥2 (`eₜ + r`) must key the lookup on
+an **internally-derived** entity. For `iid` that exact transition was traversed in training, so
+it's learned path-specifically; for `systematic` the fact was memorized only with the entity as an
+*input token*, and the model never learned that its **internal** representation of that entity is
+the *same key*. So composition ≠ a general entity-keyed lookup — it's memorized transitions.
+
+The needed property — "an entity looks the same whether given to you or derived by you" — is the
+representational alignment Loop-Think reports emerging only after a long **grokking** phase. 20k
+steps is almost certainly far short, and we diverged from their recipe (we kept the Parcae input
+injection, which re-anchors to the original query each loop and can fight the state evolving into
+"current entity"; they used a **bare** loop, no injection, zero-init).
+
+**Open levers (not yet tried):** (a) train *much* longer (grokking is delayed); (b) bare config —
+injection off + zero-init, to match the setup that achieved it; (c) ACT halting for the
+overthinking seen when loops ≫ k. The substrate and memorization are sound; the missing piece is
+the alignment that makes composition general.

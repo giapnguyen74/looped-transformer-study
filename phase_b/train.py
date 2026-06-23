@@ -25,6 +25,7 @@ import argparse
 import csv
 import json
 import os
+import time
 from collections import defaultdict
 
 try:
@@ -103,14 +104,13 @@ def deep_sup_targets(chains, T):
 
 
 @torch.no_grad()
-def evaluate(model, examples_k, meta, device, n_loops, n_max=2000):
+def evaluate(model, examples_k, meta, device, n_loops, n_max=None):
     """examples_k: list of ((prompt, chain), k). Accuracy of final-loop answer (argmax over
-    the entity range only)."""
+    the entity range only). n_max=None evaluates all (avoids dropping deep-k items)."""
     model.eval()
     E = meta["config"]["E"]
     by_k = defaultdict(lambda: [0, 0])
-    batch = []
-    items = examples_k[:n_max]
+    items = examples_k if n_max is None else examples_k[:n_max]
     for s in range(0, len(items), 512):
         chunk = items[s:s + 512]
         ids = torch.tensor([e[0][0] for e in chunk], dtype=torch.long, device=device)
@@ -133,6 +133,8 @@ def main():
                    help="max train loops (R_max>4); 0 => use K_eval_max so eval depths are in-range")
     p.add_argument("--zero-init", dest="zero_init", action="store_true",
                    help="zero-init block outputs (Loop-Think); off by default")
+    p.add_argument("--no-inject", dest="inject", action="store_false",
+                   help="bare loop (Loop-Think): drop the Parcae input injection")
     p.add_argument("--steps", type=int, default=8000)
     p.add_argument("--bsz", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -158,8 +160,10 @@ def main():
     print(f"  memorization facts={len(fact_pool):,}  composition queries={len(query_pool):,}")
 
     model = LoopedKGReasoner(V, L, dim=args.dim, heads=args.heads, n_unique=args.n_unique,
-                             n_loops=r_max, zero_init=args.zero_init).to(device)
-    print(f"  params={n_params(model):,}  rho(A)={model.inj.rho():.3f}")
+                             n_loops=r_max, zero_init=args.zero_init, inject=args.inject).to(device)
+    cfg_str = f"inject={args.inject} zero_init={args.zero_init}"
+    rho_str = f"rho(A)={model.inj.rho():.3f}" if model.inj is not None else "bare-loop"
+    print(f"  params={n_params(model):,}  {rho_str}  {cfg_str}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     g = torch.Generator().manual_seed(0)
 
@@ -171,6 +175,7 @@ def main():
         chains = [e[1] for e in picks]
         return ids, chains
 
+    t_start = time.time()
     for step in range(1, args.steps + 1):
         ids, chains = sample_batch()
         T = int(torch.randint(1, r_max + 1, (1,), generator=g).item())        # dynamic depth
@@ -181,7 +186,12 @@ def main():
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         if step % max(1, args.steps // 10) == 0 or step == 1:
-            print(f"  step {step:5d}  loss {loss.item():.4f}")
+            el = time.time() - t_start
+            print(f"  step {step:5d}  loss {loss.item():.4f}  "
+                  f"[{el:6.1f}s  {step/el:5.1f} it/s]")
+    train_secs = time.time() - t_start
+    print(f"  training done in {train_secs:.1f}s "
+          f"({train_secs/60:.1f} min, {args.steps/train_secs:.1f} it/s avg)")
 
     # ---- eval: sweep loop budget T (within trained range) + a MATCHED T=k column ----
     # T=k isolates "can it do k hops when given exactly k loops" from overthinking (too many
@@ -196,6 +206,7 @@ def main():
         return {k: evaluate(model, v, meta, device, n_loops=max(1, k))[k] for k, v in by_k.items()}
 
     print("\n  accuracy by split / depth — swept T (<=R_max) and matched T=k:")
+    t_eval = time.time()
     rows = []
     for split in ["iid_test", "systematic", "extrapolation"]:
         accs = {T: evaluate(model, eval_ex[split], meta, device, n_loops=T) for T in eval_loops}
@@ -215,6 +226,8 @@ def main():
         w.writerow(["split", "k"] + [f"acc_T{T}" for T in eval_loops] + ["acc_T_eq_k"])
         w.writerows(rows)
     print(f"\n[csv] {csv_path}")
+    print(f"  timing: train {train_secs:.1f}s + eval {time.time()-t_eval:.1f}s "
+          f"= {(train_secs + time.time()-t_eval)/60:.1f} min total")
     print("  Read: matched T=k is the fair test. extrapolation (k>train max) > 0 at T=k = the claim;")
     print("        flat-zero at T=k = 'training depth is the ceiling' (an interesting negative).")
 

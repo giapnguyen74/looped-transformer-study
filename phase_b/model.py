@@ -94,13 +94,15 @@ def loop_index_embedding(h, t, loop_dim, theta=10000.0):
 
 
 class LoopedKGReasoner(nn.Module):
-    def __init__(self, vocab, max_len, dim=128, heads=4, n_unique=1, n_loops=6, zero_init=False):
+    def __init__(self, vocab, max_len, dim=128, heads=4, n_unique=1, n_loops=6,
+                 zero_init=False, inject=True):
         super().__init__()
         self.n_loops = n_loops
+        self.inject = inject                             # True: Parcae injection; False: bare loop
         self.tok = nn.Embedding(vocab, dim)
         self.pos = nn.Embedding(max_len, dim)            # prompt length is fixed -> learned is fine
         self.blocks = nn.ModuleList([Block(dim, heads, zero_init=zero_init) for _ in range(n_unique)])
-        self.inj = Injection(dim)
+        self.inj = Injection(dim) if inject else None
         self.norm = RMSNorm(dim)
         self.head = nn.Linear(dim, vocab)
         self.loop_dim = max(2, dim // 8)
@@ -116,10 +118,18 @@ class LoopedKGReasoner(nn.Module):
         h = e
         per = []
         for t in range(n_loops):
-            x = loop_index_embedding(self.norm(h + e), t, self.loop_dim)
-            for blk in self.blocks:
-                x = blk(x)
-            h = self.inj(h, e, x)
+            if self.inject:
+                # Parcae: re-anchor to the input e each loop, contractive carry on h
+                x = loop_index_embedding(self.norm(h + e), t, self.loop_dim)
+                for blk in self.blocks:
+                    x = blk(x)
+                h = self.inj(h, e, x)
+            else:
+                # bare (Loop-Think): normalize -> step-tag -> transform; no input re-injection
+                x = loop_index_embedding(self.norm(h), t, self.loop_dim)
+                for blk in self.blocks:
+                    x = blk(x)
+                h = x
             if per_iter:
                 per.append(self._readout(h))             # (B, vocab) after loop t+1
         if per_iter:
