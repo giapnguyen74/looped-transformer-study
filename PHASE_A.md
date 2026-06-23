@@ -172,15 +172,21 @@ Two spec changes from the review, both load-bearing:
 1. **Constructive forward walks** — paths are built by walking forward and choosing relations
    that are defined or creatable, never by sampling a relation sequence and hoping it resolves
    (which made deep chains ~1e-6 likely). Deep k=6–10 chains now generate reliably.
-2. **Reserved edges for a pure systematic split** — a per-head fraction (`sys_reserve_frac`,
-   default 0.15) of `(head, rel)` edges is reserved for the sys pool; train may only create on
-   non-reserved slots, sys only on reserved. Without this, 50k train queries saturated `E*R`
-   and starved the systematic split (first run: 402/2000 sys queries). Default `E` raised to
-   **5000** so neither pool saturates.
+2. **Reserved edges for a pure systematic split** — a per-head fraction (`sys_reserve_frac`)
+   of `(head, rel)` edges is reserved for the sys pool; train may only create on non-reserved
+   slots, sys only on reserved. Without this, train queries saturate `E*R` and starve the
+   systematic split.
 
-Verified run (`seed=0`): 80,731 facts (75,857 train-owned / 4,874 sys-owned); splits at target
-(train 50000, iid_test 2000, extrapolation 5000 = 1000 each for k=6..10, systematic 2000); all
-six §6 checks pass in ~2s. Independent cross-checks: systematic vs train query paths share **0
-edges**; most-common answer is only **0.05%** of queries (no guess-the-mode shortcut).
+3. **World size scaled to the model (Phase B finding).** The model must memorize every fact in
+   its parameters. An initial large world (E=5000,R=20 → ~80k facts) was far beyond a small
+   looped model's associative-memory capacity — even 1-hop recall failed (loss ≈ random). The
+   defaults are now **E=300, R=10 → ~3k facts**, which a dim-256 block can store. Lesson: scale
+   the world *with* the model, not independently.
+
+Verified run (`seed=0`, defaults): 2,937 facts (2,100 train-owned / 837 sys-owned); splits at
+target (train 20000, iid_test 1000, extrapolation 2500 = 500 each for k=6..10, systematic 1000);
+all six §6 checks pass in ~1s. Independent cross-checks (at the earlier larger world): systematic
+vs train query paths share **0 edges**; most-common answer ≪1% of queries (no guess-the-mode
+shortcut).
 
 Regenerate: `python phase_a/gen_kg_queries.py` · inspect: `python phase_a/inspect_kg.py`.

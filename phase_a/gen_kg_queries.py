@@ -34,16 +34,20 @@ from dataclasses import dataclass, asdict
 # --------------------------------------------------------------------------- #
 @dataclass
 class Config:
-    E: int = 5000            # entities (ids 0..E-1); large enough neither pool saturates E*R
-    R: int = 20              # relations
+    # NOTE: world size is deliberately SMALL. The model must memorize every fact in its
+    # parameters; a large world (e.g. E=5000,R=20 → ~80k facts) is far beyond a small looped
+    # model's associative-memory capacity and 1-hop recall fails. E=300,R=10 → ~3k facts,
+    # which a dim-256 block can store. Scale the world WITH the model, not independently.
+    E: int = 300             # entities (ids 0..E-1)
+    R: int = 10              # relations
     K_train_max: int = 5     # max hops in train (>4 per Loop-Think: R>4 unlocks extrapolation)
     K_eval_max: int = 10     # deepest hops tested (extrapolation)
     K_max: int = 10          # prompt relation slots = fixed prompt length driver (== K_eval_max)
-    N_train: int = 50000
-    N_iid: int = 2000
-    N_sys: int = 2000
-    N_extrap_per_k: int = 1000   # per depth in (K_train_max, K_eval_max]
-    sys_reserve_frac: float = 0.15   # fraction of (head,rel) edges reserved for the sys pool
+    N_train: int = 20000
+    N_iid: int = 1000
+    N_sys: int = 1000
+    N_extrap_per_k: int = 500    # per depth in (K_train_max, K_eval_max]
+    sys_reserve_frac: float = 0.3   # fraction of (head,rel) edges reserved for the sys pool
     seed: int = 0
 
     def special(self):

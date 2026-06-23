@@ -126,10 +126,12 @@ def evaluate(model, examples_k, meta, device, n_loops, n_max=2000):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default=os.path.join(HERE, "..", "phase_a", "data", "kg"))
-    p.add_argument("--dim", type=int, default=128)
+    p.add_argument("--dim", type=int, default=256)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--n-unique", dest="n_unique", type=int, default=1)
     p.add_argument("--r-max", dest="r_max", type=int, default=8, help="max train loops (R_max>4)")
+    p.add_argument("--zero-init", dest="zero_init", action="store_true",
+                   help="zero-init block outputs (Loop-Think); off by default")
     p.add_argument("--steps", type=int, default=8000)
     p.add_argument("--bsz", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -153,8 +155,8 @@ def main():
     print(f"  vocab={V} prompt_len={L} train_depths=1-{Kt} eval_depths=1-{Ke}  R_max={args.r_max}")
     print(f"  memorization facts={len(fact_pool):,}  composition queries={len(query_pool):,}")
 
-    model = LoopedKGReasoner(V, L, dim=args.dim, heads=args.heads,
-                             n_unique=args.n_unique, n_loops=args.r_max).to(device)
+    model = LoopedKGReasoner(V, L, dim=args.dim, heads=args.heads, n_unique=args.n_unique,
+                             n_loops=args.r_max, zero_init=args.zero_init).to(device)
     print(f"  params={n_params(model):,}  rho(A)={model.inj.rho():.3f}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     g = torch.Generator().manual_seed(0)

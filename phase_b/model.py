@@ -46,14 +46,17 @@ class RMSNorm(nn.Module):
 
 
 class Block(nn.Module):
-    """Full self-attention + FFN, pre-norm. Output projections zero-init -> identity at start."""
-    def __init__(self, dim, heads):
+    """Full self-attention + FFN, pre-norm. Optionally zero-init output projections (identity
+    at start, Loop-Think) — off by default since it can slow the routing bootstrap when the
+    only readout is a single position."""
+    def __init__(self, dim, heads, zero_init=False):
         super().__init__()
         self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
         self.ffn = nn.Sequential(nn.Linear(dim, 4 * dim), nn.GELU(), nn.Linear(4 * dim, dim))
         self.n1, self.n2 = RMSNorm(dim), RMSNorm(dim)
-        nn.init.zeros_(self.attn.out_proj.weight); nn.init.zeros_(self.attn.out_proj.bias)
-        nn.init.zeros_(self.ffn[-1].weight); nn.init.zeros_(self.ffn[-1].bias)
+        if zero_init:
+            nn.init.zeros_(self.attn.out_proj.weight); nn.init.zeros_(self.attn.out_proj.bias)
+            nn.init.zeros_(self.ffn[-1].weight); nn.init.zeros_(self.ffn[-1].bias)
 
     def forward(self, x):
         a = self.n1(x)
@@ -91,12 +94,12 @@ def loop_index_embedding(h, t, loop_dim, theta=10000.0):
 
 
 class LoopedKGReasoner(nn.Module):
-    def __init__(self, vocab, max_len, dim=128, heads=4, n_unique=1, n_loops=6):
+    def __init__(self, vocab, max_len, dim=128, heads=4, n_unique=1, n_loops=6, zero_init=False):
         super().__init__()
         self.n_loops = n_loops
         self.tok = nn.Embedding(vocab, dim)
         self.pos = nn.Embedding(max_len, dim)            # prompt length is fixed -> learned is fine
-        self.blocks = nn.ModuleList([Block(dim, heads) for _ in range(n_unique)])
+        self.blocks = nn.ModuleList([Block(dim, heads, zero_init=zero_init) for _ in range(n_unique)])
         self.inj = Injection(dim)
         self.norm = RMSNorm(dim)
         self.head = nn.Linear(dim, vocab)
