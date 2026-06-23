@@ -135,6 +135,11 @@ def main():
                    help="zero-init block outputs (Loop-Think); off by default")
     p.add_argument("--no-inject", dest="inject", action="store_false",
                    help="bare loop (Loop-Think): drop the Parcae input injection")
+    p.add_argument("--no-deep-sup", dest="deep_sup", action="store_false",
+                   help="outcome-only loss (final answer only); default = per-iteration deep supervision")
+    p.add_argument("--eval-every", dest="eval_every", type=int, default=0,
+                   help="probe eval (iid k=3, sys k=2, ext k=6 at matched T) every N steps; 0=off — "
+                        "the right instrument for watching grokking")
     p.add_argument("--steps", type=int, default=8000)
     p.add_argument("--bsz", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -161,11 +166,18 @@ def main():
 
     model = LoopedKGReasoner(V, L, dim=args.dim, heads=args.heads, n_unique=args.n_unique,
                              n_loops=r_max, zero_init=args.zero_init, inject=args.inject).to(device)
-    cfg_str = f"inject={args.inject} zero_init={args.zero_init}"
+    cfg_str = f"inject={args.inject} zero_init={args.zero_init} deep_sup={args.deep_sup}"
     rho_str = f"rho(A)={model.inj.rho():.3f}" if model.inj is not None else "bare-loop"
     print(f"  params={n_params(model):,}  {rho_str}  {cfg_str}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     g = torch.Generator().manual_seed(0)
+
+    # probe subsets for periodic grokking watch (cheap)
+    def probe(split, k, n=300):
+        return [e for e in eval_ex[split] if e[1] == k][:n]
+    probes = {"iid_k3": (probe("iid_test", 3), 3),
+              "sys_k2": (probe("systematic", 2), 2),
+              "ext_k6": (probe("extrapolation", 6), 6)}
 
     def sample_batch():
         n_f = int(round(args.bsz * args.fact_ratio))
@@ -179,16 +191,26 @@ def main():
     for step in range(1, args.steps + 1):
         ids, chains = sample_batch()
         T = int(torch.randint(1, r_max + 1, (1,), generator=g).item())        # dynamic depth
-        per = model(ids, n_loops=T, per_iter=True)                            # list[T] of (B,V)
-        tgt = deep_sup_targets(chains, T).to(device)                          # (B,T)
-        loss = sum(F.cross_entropy(per[t], tgt[:, t]) for t in range(T)) / T  # deep supervision
+        if args.deep_sup:
+            per = model(ids, n_loops=T, per_iter=True)                        # list[T] of (B,V)
+            tgt = deep_sup_targets(chains, T).to(device)                      # (B,T)
+            loss = sum(F.cross_entropy(per[t], tgt[:, t]) for t in range(T)) / T
+        else:
+            logits = model(ids, n_loops=T)                                   # final readout only
+            final = torch.tensor([c[-1] for c in chains], dtype=torch.long, device=device)
+            loss = F.cross_entropy(logits, final)                            # outcome-only
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         if step % max(1, args.steps // 10) == 0 or step == 1:
             el = time.time() - t_start
-            print(f"  step {step:5d}  loss {loss.item():.4f}  "
-                  f"[{el:6.1f}s  {step/el:5.1f} it/s]")
+            print(f"  step {step:5d}  loss {loss.item():.4f}  [{el:6.1f}s  {step/el:5.1f} it/s]")
+        if args.eval_every and step % args.eval_every == 0:
+            msg = []
+            for name, (items, k) in probes.items():
+                a = evaluate(model, items, meta, device, n_loops=k).get(k, float('nan')) if items else float('nan')
+                msg.append(f"{name}={a:.3f}")
+            print(f"    [grok-watch @ {step}] " + "  ".join(msg))
     train_secs = time.time() - t_start
     print(f"  training done in {train_secs:.1f}s "
           f"({train_secs/60:.1f} min, {args.steps/train_secs:.1f} it/s avg)")
