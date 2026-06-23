@@ -5,6 +5,8 @@ __pycache__
 experiments/results/
 experiments/kstep_data/
 phase_a/data/
+phase_b/results/
+toy_llm/input.txt
 smoketest/problems.jsonl
 smoketest/transcripts.jsonl
 *.pyc
