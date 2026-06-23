@@ -129,7 +129,8 @@ def main():
     p.add_argument("--dim", type=int, default=256)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--n-unique", dest="n_unique", type=int, default=1)
-    p.add_argument("--r-max", dest="r_max", type=int, default=8, help="max train loops (R_max>4)")
+    p.add_argument("--r-max", dest="r_max", type=int, default=0,
+                   help="max train loops (R_max>4); 0 => use K_eval_max so eval depths are in-range")
     p.add_argument("--zero-init", dest="zero_init", action="store_true",
                    help="zero-init block outputs (Loop-Think); off by default")
     p.add_argument("--steps", type=int, default=8000)
@@ -145,6 +146,7 @@ def main():
     meta, facts, queries, tail = load_corpus(args.data)
     V, L = meta["vocab_size"], meta["prompt_len"]
     Kt, Ke = meta["config"]["K_train_max"], meta["config"]["K_eval_max"]
+    r_max = args.r_max or Ke           # train with enough loops that eval depths are in-range
     train_ex, eval_ex = build_examples(meta, facts, queries, tail)
 
     # split the train pool into facts vs composition queries for ratio sampling
@@ -152,11 +154,11 @@ def main():
     fact_pool = train_ex[:n_facts]
     query_pool = train_ex[n_facts:]
     print(f"== Phase B: KG looped reasoner  device={device} ==")
-    print(f"  vocab={V} prompt_len={L} train_depths=1-{Kt} eval_depths=1-{Ke}  R_max={args.r_max}")
+    print(f"  vocab={V} prompt_len={L} train_depths=1-{Kt} eval_depths=1-{Ke}  R_max={r_max}")
     print(f"  memorization facts={len(fact_pool):,}  composition queries={len(query_pool):,}")
 
     model = LoopedKGReasoner(V, L, dim=args.dim, heads=args.heads, n_unique=args.n_unique,
-                             n_loops=args.r_max, zero_init=args.zero_init).to(device)
+                             n_loops=r_max, zero_init=args.zero_init).to(device)
     print(f"  params={n_params(model):,}  rho(A)={model.inj.rho():.3f}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     g = torch.Generator().manual_seed(0)
@@ -171,7 +173,7 @@ def main():
 
     for step in range(1, args.steps + 1):
         ids, chains = sample_batch()
-        T = int(torch.randint(1, args.r_max + 1, (1,), generator=g).item())   # dynamic depth
+        T = int(torch.randint(1, r_max + 1, (1,), generator=g).item())        # dynamic depth
         per = model(ids, n_loops=T, per_iter=True)                            # list[T] of (B,V)
         tgt = deep_sup_targets(chains, T).to(device)                          # (B,T)
         loss = sum(F.cross_entropy(per[t], tgt[:, t]) for t in range(T)) / T  # deep supervision
@@ -181,26 +183,40 @@ def main():
         if step % max(1, args.steps // 10) == 0 or step == 1:
             print(f"  step {step:5d}  loss {loss.item():.4f}")
 
-    # ---- eval: sweep loop budget T per split ----
-    eval_loops = sorted({Kt, Ke, 2 * Ke})
-    print("\n  accuracy by split / depth, swept over eval loops T:")
+    # ---- eval: sweep loop budget T (within trained range) + a MATCHED T=k column ----
+    # T=k isolates "can it do k hops when given exactly k loops" from overthinking (too many
+    # loops drifting). All T <= r_max so loop count itself is in training distribution.
+    eval_loops = sorted({Kt, r_max})
+    nan = float("nan")
+
+    def matched(items):
+        by_k = defaultdict(list)
+        for ex_k in items:
+            by_k[ex_k[1]].append(ex_k)
+        return {k: evaluate(model, v, meta, device, n_loops=max(1, k))[k] for k, v in by_k.items()}
+
+    print("\n  accuracy by split / depth — swept T (<=R_max) and matched T=k:")
     rows = []
     for split in ["iid_test", "systematic", "extrapolation"]:
         accs = {T: evaluate(model, eval_ex[split], meta, device, n_loops=T) for T in eval_loops}
-        ks = sorted({k for T in eval_loops for k in accs[T]})
+        m = matched(eval_ex[split])
+        ks = sorted(set(m) | {k for T in eval_loops for k in accs[T]})
         for k in ks:
-            line = f"   {split:13s} k={k:<2d}" + "".join(
-                f"  T={T}:{accs[T].get(k, float('nan')):.3f}" for T in eval_loops)
-            print(line)
-            rows.append([split, k] + [round(accs[T].get(k, float('nan')), 4) for T in eval_loops])
+            swept = "".join(f"  T={T}:{accs[T].get(k, nan):.3f}" for T in eval_loops)
+            print(f"   {split:13s} k={k:<2d}{swept}  T=k:{m.get(k, nan):.3f}")
+            rows.append([split, k] + [round(accs[T].get(k, nan), 4) for T in eval_loops]
+                        + [round(m.get(k, nan), 4)])
 
     out_dir = os.path.join(HERE, "results")
     os.makedirs(out_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, "phase_b_eval.csv")
     with open(csv_path, "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["split", "k"] + [f"acc_T{T}" for T in eval_loops]); w.writerows(rows)
+        w = csv.writer(f)
+        w.writerow(["split", "k"] + [f"acc_T{T}" for T in eval_loops] + ["acc_T_eq_k"])
+        w.writerows(rows)
     print(f"\n[csv] {csv_path}")
-    print("  Read: extrapolation (k>train max) rising with T = test-time depth scaling — the claim.")
+    print("  Read: matched T=k is the fair test. extrapolation (k>train max) > 0 at T=k = the claim;")
+    print("        flat-zero at T=k = 'training depth is the ceiling' (an interesting negative).")
 
 
 if __name__ == "__main__":
