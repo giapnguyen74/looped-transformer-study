@@ -58,6 +58,18 @@ python train.py train --model parcae          # or vanilla / bare
 python train.py train --model vanilla --layers 8
 ```
 
+**Where Parcae's injection should matter — `depth`.** At low loop count T, a bare loop is already
+stable (norm+residual), so parcae≈bare. Parcae's leash (ρ<1) earns its keep at **high T**, where a
+bare loop destabilizes. The `depth` mode sweeps T for parcae vs bare (model size & data fixed — T
+is the axis, not scale):
+
+```bash
+python train.py depth --dataset enwik8 --depth-list 2,4,8,12,16 --steps 8000 --dropout 0.1
+```
+
+If `(bare − parcae)` grows with T, or bare **diverges** while parcae keeps converging, that's the
+injection working. (Compute grows with T — high-T rows are slow.)
+
 ## The compare set
 
 All share `dim`, `heads`, vocab, context, steps, and the swept hparams. With defaults

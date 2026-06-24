@@ -52,21 +52,32 @@ def val_loss(model, data, bsz, n_batches=40):
     return tot / n_batches
 
 
-def train_one(kind, data, args, device, lr, wd, steps, layers=None, quiet=False):
+def load_hparams(args):
+    if os.path.exists(HPARAMS_FILE):
+        hp = json.load(open(HPARAMS_FILE))
+        return hp["lr"], hp["weight_decay"], f"swept({hp['swept_on']})"
+    return args.lr, args.weight_decay, "defaults"
+
+
+def train_one(kind, data, args, device, lr, wd, steps, layers=None, loops=None, quiet=False):
     torch.manual_seed(0)
     g = torch.Generator().manual_seed(0)
     model, label = build(kind, data.vocab, args.dim, args.heads, args.block,
                          layers=layers if layers is not None else args.layers,
-                         k=args.k, loops=args.loops, dropout=args.dropout)
+                         k=args.k, loops=loops if loops is not None else args.loops,
+                         dropout=args.dropout)
     model = model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     val_every = args.val_every or max(1, steps // 10)
-    best_val, best_step, last_val = float("inf"), 0, float("nan")
+    best_val, best_step, last_val, diverged = float("inf"), 0, float("nan"), False
     t0 = time.time()
     for step in range(1, steps + 1):
         x, y = data.batch("train", args.bsz, generator=g)
         logits = model(x)
         loss = F.cross_entropy(logits.reshape(-1, data.vocab), y.reshape(-1))
+        if not torch.isfinite(loss):                 # instability watch (Parcae's whole point)
+            diverged = True
+            break
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -79,7 +90,7 @@ def train_one(kind, data, args, device, lr, wd, steps, layers=None, quiet=False)
                       f"  best {best_val:.3f}@{best_step}  ({time.time()-t0:.0f}s)")
     return {"label": label, "params": n_params(model), "best_val": best_val,
             "best_step": best_step, "final_val": last_val, "ppl": math.exp(best_val),
-            "secs": time.time() - t0}
+            "secs": time.time() - t0, "diverged": diverged}
 
 
 def cmd_sweep(data, args, device):
@@ -129,9 +140,36 @@ def cmd_compare(data, args, device):
     print("        buys depth cheaply; parcae vs bare = does the injection help.")
 
 
+def cmd_depth(data, args, device):
+    """Sweep loop count T for parcae vs bare. Parcae's claim: it keeps converging at high T
+    where a bare loop destabilizes/degrades. Model size & data are held fixed — T is the axis."""
+    lr, wd, prov = load_hparams(args)
+    Ts = [int(x) for x in args.depth_list.split(",")]
+    print(f"  depth sweep over T={Ts}  (k={args.k}-layer block; hparams={prov} lr={lr:.1e}; "
+          f"{args.steps} steps each)")
+    print(f"\n  T   eff_depth   parcae(val)        bare(val)         bare - parcae")
+    rows = []
+    for T in Ts:
+        rp = train_one("parcae", data, args, device, lr, wd, args.steps, loops=T, quiet=True)
+        rb = train_one("bare", data, args, device, lr, wd, args.steps, loops=T, quiet=True)
+        pv = "diverged" if rp["diverged"] else f"{rp['best_val']:.4f}"
+        bv = "diverged" if rb["diverged"] else f"{rb['best_val']:.4f}"
+        gap = (rb["best_val"] - rp["best_val"]) if not (rp["diverged"] or rb["diverged"]) else float("nan")
+        print(f"  {T:<3d} {args.k*T:<9d} {pv:>10s}        {bv:>10s}        {gap:+.4f}")
+        rows.append([T, args.k * T, rp["best_val"], rb["best_val"], rp["diverged"], rb["diverged"]])
+    out = os.path.join(HERE, "results"); os.makedirs(out, exist_ok=True)
+    import csv
+    with open(os.path.join(out, "depth_sweep.csv"), "w", newline="") as f:
+        w = csv.writer(f); w.writerow(["T", "eff_depth", "parcae_val", "bare_val", "parcae_div", "bare_div"])
+        w.writerows(rows)
+    print(f"\n[csv] {os.path.join(out, 'depth_sweep.csv')}")
+    print("  Read: if (bare - parcae) GROWS with T, or bare diverges while parcae doesn't,")
+    print("        that's the Parcae injection earning its keep at high loop depth.")
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["sweep", "compare", "train"])
+    p.add_argument("command", choices=["sweep", "compare", "train", "depth"])
     p.add_argument("--model", choices=["vanilla", "parcae", "bare"], default="parcae")
     p.add_argument("--layers", type=int, default=8, help="distinct layers (vanilla / single train)")
     p.add_argument("--k", type=int, default=2, help="block layers (looped)")
@@ -150,6 +188,8 @@ def main():
                    help="validate every N steps for best-val tracking; 0 => steps//10")
     p.add_argument("--sweep-lr", dest="sweep_lr", default="1e-3,5e-4,3e-4,1e-4")
     p.add_argument("--sweep-steps", dest="sweep_steps", type=int, default=1500)
+    p.add_argument("--depth-list", dest="depth_list", default="2,4,8,12,16",
+                   help="loop counts T to sweep in `depth` (parcae vs bare)")
     p.add_argument("--data", default=None)
     p.add_argument("--device", default="auto")
     args = p.parse_args()
@@ -163,6 +203,8 @@ def main():
         cmd_sweep(data, args, device)
     elif args.command == "compare":
         cmd_compare(data, args, device)
+    elif args.command == "depth":
+        cmd_depth(data, args, device)
     else:
         r = train_one(args.model, data, args, device, lr=args.lr, wd=args.weight_decay,
                       steps=args.steps)
