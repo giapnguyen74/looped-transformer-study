@@ -47,20 +47,44 @@ This matches `summary/reasoning_with_latent_thoughts.md`: looped models **underp
 reasoning**. So the regime where looped should *match* deep is a reasoning task (the i-GSM /
 multi-hop KG game in `phase_b/`), not raw LM perplexity. The two experiments are complementary.
 
-## Why does Parcae ≈ bare here?
+And the **Parcae injection's role is clear from the depth sweep below**: at low loop counts it's
+neutral, but it's what *enables deep looping at all* — a bare loop collapses past eff-depth ~8,
+while Parcae keeps converging to ~24. So the full statement is: looping is parameter-efficient
+depth, and the ρ<1 injection is what lets you actually push that depth without the loop blowing up.
 
-The Parcae injection is a **stability** mechanism (ρ<1 leash), and stability only matters when the
-loop is at risk of becoming unstable — at **high loop counts T** and under **test-time depth
-changes**. Parcae's own ablation (Table 4) frames the Ā constraint as "enables convergence at
-**high T** (e.g. μ_rec=T=8)." We ran **T=4, fixed depth**, where RMSNorm + residual already keep
-the bare loop well-behaved, so the leash has nothing to fix (the tiny edge parcae shows is ~its
-66k extra injection params). It's a *regime* issue, not a *scale* issue.
+## Depth sweep — where the Parcae injection earns its keep
 
-To actually surface Parcae's benefit, stress the regime it targets:
-1. **Higher loop count** (`--loops 8`/`12`) — bare should start to destabilize/degrade while
-   Parcae stays bounded.
-2. **Test-time depth** (train at T, eval at >T) — Parcae's ρ<1 stays bounded; bare drifts
-   (the "overthinking" we observed in `phase_b/`). Not yet wired into this harness.
+In the main comparison parcae ≈ bare, because at **T=4** the bare loop is shallow enough that
+RMSNorm + residual keep it stable — there's no instability for the ρ<1 leash to fix. The injection
+is a *stability* mechanism; it only matters at **high loop counts**. Sweeping T (model size and
+data fixed, `--depth-list 2,4,8,12,16`, 8000 steps, enwik8) shows exactly that:
+
+| T | eff_depth | parcae (best val) | bare (best val) | bare − parcae |
+|--:|--:|--:|--:|--:|
+| 2 | 4 | 1.345 | 1.374 | +0.03 |
+| 4 | 8 | 1.310 | 1.322 | +0.01 |
+| 8 | 16 | **1.293** | **3.503** | **+2.21** |
+| 12 | 24 | **1.282** | 3.503 | +2.22 |
+| 16 | 32 | 1.286 | 3.503 | +2.22 |
+
+- **Parcae** improves with depth and stays stable throughout (best at T=12 / eff-depth 24), then
+  gently saturates — looping is a usable depth axis *with* the leash.
+- **Bare** is stable to T=4, then **falls off a cliff** between eff-depth 8 and 16 and sticks at
+  ~3.50 (ppl ~33) for T=8/12/16 — it collapsed to a degenerate fixed point and never recovers
+  (finite, not NaN, so `bare_div=False`).
+
+This is a **threshold/cliff**, not a gradual gap: below it parcae≈bare, above it the difference is
+~2.2 nats — the spectral radius crossing ~1 under more unrolling flips the bare loop to
+instability, while Parcae's ρ<1 parameterization keeps it bounded. With the **same** swept
+hyperparameters, Parcae converges where the bare loop dies — robustness, not tuning. This is
+exactly Parcae Table 4's "constraining Ā enables convergence at high T."
+
+(`results/depth_sweep.csv` has the raw numbers.)
+
+**Takeaway:** the Parcae injection's value is *enabling deep looping at all*. The bare loop caps
+out around eff-depth ~8; Parcae keeps converging to ~24, which is what lets you actually spend the
+depth axis. Still open: a *test-time* depth probe (train at T, eval at >T) — Parcae should degrade
+gracefully where bare overthinks (as seen in `phase_b/`); not yet wired here.
 
 ## Caveats
 

@@ -125,7 +125,10 @@ def cmd_compare(data, args, device):
               f"Run `train.py sweep` first for the fair protocol.")
 
     eff = args.k * args.loops
-    plan = [("vanilla", args.k), ("parcae", None), ("bare", None), ("vanilla", eff)]
+    plan = [("vanilla", args.k), ("parcae", None)]
+    if not args.skip_bare:
+        plan.append(("bare", None))
+    plan.append(("vanilla", eff))          # iso-depth / iso-FLOP baseline (k*loops distinct layers)
     runs = []
     for kind, layers in plan:
         print(f"\n--- training {kind} (layers={layers if layers else f'{args.k}x{args.loops}'}) ---")
@@ -190,6 +193,8 @@ def main():
     p.add_argument("--sweep-steps", dest="sweep_steps", type=int, default=1500)
     p.add_argument("--depth-list", dest="depth_list", default="2,4,8,12,16",
                    help="loop counts T to sweep in `depth` (parcae vs bare)")
+    p.add_argument("--skip-bare", dest="skip_bare", action="store_true",
+                   help="omit the bare looped model from `compare` (it diverges at high T anyway)")
     p.add_argument("--data", default=None)
     p.add_argument("--device", default="auto")
     args = p.parse_args()
